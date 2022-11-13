@@ -15,6 +15,7 @@ import org.spongepowered.asm.mixin.Unique;
 import org.spongepowered.asm.mixin.injection.At;
 import org.spongepowered.asm.mixin.injection.Inject;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
+import org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable;
 
 import dev.emi.trinkets.TrinketPlayerScreenHandler;
 import dev.emi.trinkets.TrinketsNetwork;
@@ -32,14 +33,18 @@ import net.fabricmc.fabric.api.networking.v1.ServerPlayNetworking;
 import net.minecraft.enchantment.EnchantmentHelper;
 import net.minecraft.entity.Entity;
 import net.minecraft.entity.EntityType;
+import net.minecraft.entity.ItemEntity;
 import net.minecraft.entity.LivingEntity;
 import net.minecraft.entity.attribute.AttributeContainer;
 import net.minecraft.entity.attribute.EntityAttribute;
 import net.minecraft.entity.attribute.EntityAttributeModifier;
+import net.minecraft.entity.player.PlayerEntity;
 import net.minecraft.item.ItemStack;
 import net.minecraft.nbt.NbtCompound;
 import net.minecraft.network.PacketByteBuf;
 import net.minecraft.server.network.ServerPlayerEntity;
+import net.minecraft.tag.ItemTags;
+import net.minecraft.util.math.MathHelper;
 import net.minecraft.world.GameRules;
 
 /**
@@ -57,6 +62,19 @@ public abstract class LivingEntityMixin extends Entity {
 
 	private LivingEntityMixin() {
 		super(null, null);
+	}
+
+	@Inject(at = @At("HEAD"), method = "canFreeze", cancellable = true)
+	private void canFreeze(CallbackInfoReturnable<Boolean> cir) {
+		var component = TrinketsApi.getTrinketComponent((LivingEntity) (Object) this);
+		if (component.isPresent()) {
+			for (var equipped : component.get().getAllEquipped()) {
+				if (equipped.getRight().isIn(ItemTags.FREEZE_IMMUNE_WEARABLES)) {
+					cir.setReturnValue(false);
+					break;
+				}
+			}
+		}
 	}
 
 	@Inject(at = @At("TAIL"), method = "dropInventory")
@@ -93,7 +111,7 @@ public abstract class LivingEntityMixin extends Entity {
 
 			switch (dropRule) {
 				case DROP:
-					dropStack(stack);
+					dropFromEntity(stack);
 					// Fallthrough
 				case DESTROY:
 					inventory.setStack(ref.index(), ItemStack.EMPTY);
@@ -104,23 +122,38 @@ public abstract class LivingEntityMixin extends Entity {
 		}));
 	}
 
+	private void dropFromEntity(ItemStack stack) {
+		ItemEntity entity = dropStack(stack);
+		// Mimic player drop behavior for only players
+		if (entity != null && ((Entity) this) instanceof PlayerEntity) {
+			entity.setPos(entity.getX(), this.getEyeY() - 0.3, entity.getZ());
+			entity.setPickupDelay(40);
+			float magnitude = this.random.nextFloat() * 0.5f;
+			float angle = this.random.nextFloat() * ((float)Math.PI * 2);
+			entity.setVelocity(-MathHelper.sin(angle) * magnitude, 0.2f, MathHelper.cos(angle) * magnitude);
+		}
+	}
+
 	@Inject(at = @At("TAIL"), method = "tick")
 	private void tick(CallbackInfo info) {
 		LivingEntity entity = (LivingEntity) (Object) this;
 		TrinketsApi.getTrinketComponent(entity).ifPresent(trinkets -> {
 			Map<String, ItemStack> newlyEquippedTrinkets = new HashMap<>();
-			trinkets.clearCachedModifiers();
+			Map<String, ItemStack> contentUpdates = new HashMap<>();
 			trinkets.forEach((ref, stack) -> {
 				TrinketInventory inventory = ref.inventory();
 				SlotType slotType = inventory.getSlotType();
 				int index = ref.index();
 				ItemStack oldStack = getOldStack(slotType, index);
 				ItemStack newStack = inventory.getStack(index);
-				newlyEquippedTrinkets.put(slotType.getGroup() + "/" + slotType.getName() + "/" + index, newStack.copy());
+				ItemStack copy = newStack.copy();
+				String newRef = slotType.getGroup() + "/" + slotType.getName() + "/" + index;
+				newlyEquippedTrinkets.put(newRef, copy);
 
 				if (!ItemStack.areEqual(newStack, oldStack)) {
 
 					if (!this.world.isClient) {
+						contentUpdates.put(newRef, copy);
 						UUID uuid = SlotAttributes.getUuid(ref);
 
 						if (!oldStack.isEmpty()) {
@@ -143,7 +176,7 @@ public abstract class LivingEntityMixin extends Entity {
 
 						if (!newStack.isEmpty()) {
 							Trinket trinket = TrinketsApi.getTrinket(newStack.getItem());
-							Multimap<EntityAttribute, EntityAttributeModifier> map = trinket.getModifiers(oldStack, ref, entity, uuid);
+							Multimap<EntityAttribute, EntityAttributeModifier> map = trinket.getModifiers(newStack, ref, entity, uuid);
 							Multimap<String, EntityAttributeModifier> slotMap = HashMultimap.create();
 							Set<SlotEntityAttribute> toRemove = Sets.newHashSet();
 							for (EntityAttribute attr : map.keySet()) {
@@ -170,22 +203,36 @@ public abstract class LivingEntityMixin extends Entity {
 			if (!this.world.isClient) {
 				Set<TrinketInventory> inventoriesToSend = trinkets.getTrackingUpdates();
 
-				if (!inventoriesToSend.isEmpty()) {
+				if (!contentUpdates.isEmpty() || !inventoriesToSend.isEmpty()) {
 					PacketByteBuf buf = PacketByteBufs.create();
-					NbtCompound tag = new NbtCompound();
 					buf.writeInt(entity.getId());
+					NbtCompound tag = new NbtCompound();
+
 					for (TrinketInventory trinketInventory : inventoriesToSend) {
 						tag.put(trinketInventory.getSlotType().getGroup() + "/" + trinketInventory.getSlotType().getName(), trinketInventory.getSyncTag());
 					}
+
+					buf.writeNbt(tag);
+					tag = new NbtCompound();
+
+					for (Map.Entry<String, ItemStack> entry : contentUpdates.entrySet()) {
+						tag.put(entry.getKey(), entry.getValue().writeNbt(new NbtCompound()));
+					}
+
 					buf.writeNbt(tag);
 
 					for (ServerPlayerEntity player : PlayerLookup.tracking(entity)) {
-						ServerPlayNetworking.send(player, TrinketsNetwork.SYNC_MODIFIERS, buf);
+						ServerPlayNetworking.send(player, TrinketsNetwork.SYNC_INVENTORY, buf);
 					}
-					if (entity instanceof ServerPlayerEntity) {
-						ServerPlayNetworking.send((ServerPlayerEntity) entity, TrinketsNetwork.SYNC_MODIFIERS, buf);
-						((TrinketPlayerScreenHandler) ((ServerPlayerEntity) entity).playerScreenHandler).updateTrinketSlots(false);
+
+					if (entity instanceof ServerPlayerEntity serverPlayer) {
+						ServerPlayNetworking.send(serverPlayer, TrinketsNetwork.SYNC_INVENTORY, buf);
+
+						if (!inventoriesToSend.isEmpty()) {
+							((TrinketPlayerScreenHandler) serverPlayer.playerScreenHandler).trinkets$updateTrinketSlots(false);
+						}
 					}
+
 					inventoriesToSend.clear();
 				}
 			}

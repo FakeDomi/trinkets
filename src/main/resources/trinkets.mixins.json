@@ -1,23 +1,27 @@
 {
   "required": true,
   "package": "dev.emi.trinkets.mixin",
-  "compatibilityLevel": "JAVA_8",
+  "compatibilityLevel": "JAVA_17",
   "mixins": [
-    "CreativeInventoryScreenMixin",
-      "LivingEntityMixin",
-      "PlayerInventoryMixin",
-      "PlayerManagerMixin",
-      "PlayerScreenHandlerMixin",
-      "EnchantmentHelperMixin"
-    ],
+    "accessor.ScreenHandlerAccessor",
+    "LivingEntityMixin",
+    "PlayerInventoryMixin",
+    "PlayerManagerMixin",
+    "PlayerScreenHandlerMixin",
+    "EnchantmentHelperMixin",
+    "ServerPlayNetworkHandlerMixin"
+  ],
   "client": [
-      "accessor.LivingEntityAccessor",
-      "ClickableWidgetMixin",
-      "HandledScreenMixin",
-      "InventoryScreenMixin",
-      "ItemStackMixin",
-      "PlayerEntityRendererMixin"
-    ],
+    "accessor.CreativeSlotAccessor",
+    "accessor.LivingEntityAccessor",
+    "ClickableWidgetMixin",
+    "ClientPlayNetworkHandlerMixin",
+    "CreativeInventoryScreenMixin",
+    "HandledScreenMixin",
+    "InventoryScreenMixin",
+    "ItemStackMixin",
+    "PlayerEntityRendererMixin"
+  ],
   "injectors": {
     "defaultRequire": 1
   }

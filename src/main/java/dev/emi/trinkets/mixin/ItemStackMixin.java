@@ -1,23 +1,8 @@
 package dev.emi.trinkets.mixin;
 
-import java.util.Collection;
-import java.util.Iterator;
-import java.util.List;
-import java.util.Map;
-import java.util.Set;
-
 import com.google.common.collect.Maps;
 import com.google.common.collect.Multimap;
 import com.google.common.collect.Sets;
-
-import org.spongepowered.asm.mixin.Mixin;
-import org.spongepowered.asm.mixin.Unique;
-import org.spongepowered.asm.mixin.injection.At;
-import org.spongepowered.asm.mixin.injection.At.Shift;
-import org.spongepowered.asm.mixin.injection.Inject;
-import org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable;
-import org.spongepowered.asm.mixin.injection.callback.LocalCapture;
-
 import dev.emi.trinkets.TrinketSlot;
 import dev.emi.trinkets.api.SlotAttributes;
 import dev.emi.trinkets.api.SlotReference;
@@ -32,8 +17,20 @@ import net.minecraft.entity.attribute.EntityAttributes;
 import net.minecraft.entity.player.PlayerEntity;
 import net.minecraft.item.ItemStack;
 import net.minecraft.text.Text;
-import net.minecraft.text.TranslatableText;
 import net.minecraft.util.Formatting;
+import org.spongepowered.asm.mixin.Mixin;
+import org.spongepowered.asm.mixin.Unique;
+import org.spongepowered.asm.mixin.injection.At;
+import org.spongepowered.asm.mixin.injection.At.Shift;
+import org.spongepowered.asm.mixin.injection.Inject;
+import org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable;
+import org.spongepowered.asm.mixin.injection.callback.LocalCapture;
+
+import java.util.Collection;
+import java.util.Iterator;
+import java.util.List;
+import java.util.Map;
+import java.util.Set;
 
 /**
  * Adds a tooltip for trinkets describing slots and attributes
@@ -48,6 +45,7 @@ public abstract class ItemStackMixin {
 	private void getTooltip(PlayerEntity player, TooltipContext context, CallbackInfoReturnable<List<Text>> info, List<Text> list) {
 		TrinketsApi.getTrinketComponent(player).ifPresent(comp -> {
 			ItemStack self = (ItemStack) (Object) this;
+			boolean canEquipAnywhere = true;
 			Set<SlotType> slots = Sets.newHashSet();
 			Map<SlotType, Multimap<EntityAttribute, EntityAttributeModifier>> modifiers = Maps.newHashMap();
 			Multimap<EntityAttribute, EntityAttributeModifier> defaultModifier = null;
@@ -55,13 +53,17 @@ public abstract class ItemStackMixin {
 			int slotCount = 0;
 
 			for (Map.Entry<String, Map<String, TrinketInventory>> group : comp.getInventory().entrySet()) {
+				outer:
 				for (Map.Entry<String, TrinketInventory> inventory : group.getValue().entrySet()) {
 					TrinketInventory trinketInventory = inventory.getValue();
 					SlotType slotType = trinketInventory.getSlotType();
+					slotCount++;
+					boolean anywhereButHidden = false;
 					for (int i = 0; i < trinketInventory.size(); i++) {
 						SlotReference ref = new SlotReference(trinketInventory, i);
 						boolean res = TrinketsApi.evaluatePredicateSet(slotType.getTooltipPredicates(), self, ref, player);
-						if (res && TrinketSlot.canInsert(self, ref, player)) {
+						boolean canInsert = TrinketSlot.canInsert(self, ref, player);
+						if (res && canInsert) {
 							boolean sameTranslationExists = false;
 							for (SlotType t : slots) {
 								if (t.getTranslation().getString().equals(slotType.getTranslation().getString())) {
@@ -96,24 +98,28 @@ public abstract class ItemStackMixin {
 							if (!duplicate) {
 								modifiers.put(slotType, map);
 							}
+							continue outer;
+						} else if (canInsert) {
+							anywhereButHidden = true;
 						}
 					}
-
-					slotCount++;
+					if (!anywhereButHidden) {
+						canEquipAnywhere = false;
+					}
 				}
 			}
 
-			if (slots.size() == slotCount && slotCount > 1) {
-				list.add(new TranslatableText("trinkets.tooltip.slots.any").formatted(Formatting.GRAY));
+			if (canEquipAnywhere && slotCount > 1) {
+				list.add(Text.translatable("trinkets.tooltip.slots.any").formatted(Formatting.GRAY));
 			} else if (slots.size() > 1) {
-				list.add(new TranslatableText("trinkets.tooltip.slots.list").formatted(Formatting.GRAY));
+				list.add(Text.translatable("trinkets.tooltip.slots.list").formatted(Formatting.GRAY));
 				for (SlotType type : slots) {
 					list.add(type.getTranslation().formatted(Formatting.BLUE));
 				}
 			} else if (slots.size() == 1) {
 				// Should only run once
 				for (SlotType type : slots) {
-					list.add(new TranslatableText("trinkets.tooltip.slots.single",
+					list.add(Text.translatable("trinkets.tooltip.slots.single",
 							type.getTranslation().formatted(Formatting.BLUE)).formatted(Formatting.GRAY));
 				}
 			}
@@ -121,12 +127,12 @@ public abstract class ItemStackMixin {
 			if (modifiers.size() > 0) {
 				if (allModifiersSame) {
 					if (defaultModifier != null && !defaultModifier.isEmpty()) {
-						list.add(new TranslatableText("trinkets.tooltip.attributes.all").formatted(Formatting.GRAY));
+						list.add(Text.translatable("trinkets.tooltip.attributes.all").formatted(Formatting.GRAY));
 						addAttributes(list, defaultModifier);
 					}
 				} else {
 					for (SlotType type : modifiers.keySet()) {
-						list.add(new TranslatableText("trinkets.tooltip.attributes.single",
+						list.add(Text.translatable("trinkets.tooltip.attributes.single",
 								type.getTranslation().formatted(Formatting.BLUE)).formatted(Formatting.GRAY));
 						addAttributes(list, modifiers.get(type));
 					}
@@ -151,16 +157,16 @@ public abstract class ItemStackMixin {
 					g *= 100.0D;
 				}
 
-				Text text = new TranslatableText(attribute.getTranslationKey());
+				Text text = Text.translatable(attribute.getTranslationKey());
 				if (attribute instanceof SlotAttributes.SlotEntityAttribute) {
-					text = new TranslatableText("trinkets.tooltip.attributes.slots", text);
+					text = Text.translatable("trinkets.tooltip.attributes.slots", text);
 				}
 				if (g > 0.0D) {
-					list.add(new TranslatableText("attribute.modifier.plus." + modifier.getOperation().getId(),
+					list.add(Text.translatable("attribute.modifier.plus." + modifier.getOperation().getId(),
 						ItemStack.MODIFIER_FORMAT.format(g), text).formatted(Formatting.BLUE));
 				} else if (g < 0.0D) {
 					g *= -1.0D;
-					list.add(new TranslatableText("attribute.modifier.take." + modifier.getOperation().getId(),
+					list.add(Text.translatable("attribute.modifier.take." + modifier.getOperation().getId(),
 						ItemStack.MODIFIER_FORMAT.format(g), text).formatted(Formatting.RED));
 				}
 			}

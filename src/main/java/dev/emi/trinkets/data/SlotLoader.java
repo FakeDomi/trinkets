@@ -4,6 +4,7 @@ import java.io.IOException;
 import java.io.InputStreamReader;
 import java.util.HashMap;
 import java.util.HashSet;
+import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.stream.Collectors;
@@ -22,6 +23,7 @@ import dev.emi.trinkets.api.SlotType;
 import dev.emi.trinkets.api.TrinketEnums.DropRule;
 import dev.emi.trinkets.data.SlotLoader.GroupData;
 import net.fabricmc.fabric.api.resource.IdentifiableResourceReloadListener;
+import net.minecraft.resource.Resource;
 import net.minecraft.resource.ResourceManager;
 import net.minecraft.resource.SinglePreparationResourceReloader;
 import net.minecraft.util.Identifier;
@@ -43,35 +45,40 @@ public class SlotLoader extends SinglePreparationResourceReloader<Map<String, Gr
 	protected Map<String, GroupData> prepare(ResourceManager resourceManager, Profiler profiler) {
 		Map<String, GroupData> map = new HashMap<>();
 		String dataType = "slots";
+		for (Map.Entry<Identifier, List<Resource>> entry : resourceManager.findAllResources(dataType, id -> id.getPath().endsWith(".json")).entrySet()) {
+			Identifier identifier = entry.getKey();
 
-		for (Identifier identifier : resourceManager.findResources(dataType, (stringx) -> stringx.endsWith(".json"))) {
+			if (identifier.getNamespace().equals(TrinketsMain.MOD_ID)) {
 
-			try {
-				InputStreamReader reader = new InputStreamReader(resourceManager.getResource(identifier).getInputStream());
-				JsonObject jsonObject = JsonHelper.deserialize(GSON, reader, JsonObject.class);
+				try {
+					for (Resource resource : entry.getValue()) {
+						InputStreamReader reader = new InputStreamReader(resource.getInputStream());
+						JsonObject jsonObject = JsonHelper.deserialize(GSON, reader, JsonObject.class);
 
-				if (jsonObject != null) {
-					String path = identifier.getPath();
-					String[] parsed = path.substring(dataType.length() + 1, path.length() - FILE_SUFFIX_LENGTH).split("/");
-					String groupName = parsed[0];
-					String fileName = parsed[parsed.length - 1];
-					GroupData group = map.computeIfAbsent(groupName, (k) -> new GroupData());
+						if (jsonObject != null) {
+							String path = identifier.getPath();
+							String[] parsed = path.substring(dataType.length() + 1, path.length() - FILE_SUFFIX_LENGTH).split("/");
+							String groupName = parsed[0];
+							String fileName = parsed[parsed.length - 1];
+							GroupData group = map.computeIfAbsent(groupName, (k) -> new GroupData());
 
-					try {
-						if (fileName.equals("group")) {
-							group.read(jsonObject);
-						} else {
-							SlotData slot = group.slots.computeIfAbsent(fileName, (k) -> new SlotData());
-							slot.read(jsonObject);
+							try {
+								if (fileName.equals("group")) {
+									group.read(jsonObject);
+								} else {
+									SlotData slot = group.slots.computeIfAbsent(fileName, (k) -> new SlotData());
+									slot.read(jsonObject);
+								}
+							} catch (JsonSyntaxException e) {
+								TrinketsMain.LOGGER.error("[trinkets] Syntax error while reading data for " + path);
+								e.printStackTrace();
+							}
 						}
-					} catch (JsonSyntaxException e) {
-						TrinketsMain.LOGGER.error("[trinkets] Syntax error while reading data for " + path);
-						e.printStackTrace();
 					}
+				} catch (IOException e) {
+					TrinketsMain.LOGGER.error("[trinkets] Unknown IO error while reading slot data!");
+					e.printStackTrace();
 				}
-			} catch (IOException e) {
-				TrinketsMain.LOGGER.error("[trinkets] Unknown IO error while reading slot data!");
-				e.printStackTrace();
 			}
 		}
 		return map;

@@ -1,11 +1,14 @@
 package dev.emi.trinkets.mixin;
 
+import com.google.common.collect.ImmutableList;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 
+import javax.annotation.Nonnull;
+import javax.annotation.Nullable;
 import org.spongepowered.asm.mixin.Final;
 import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.Shadow;
@@ -15,8 +18,9 @@ import org.spongepowered.asm.mixin.injection.Inject;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable;
 
+import dev.emi.trinkets.Point;
+import dev.emi.trinkets.SurvivalTrinketSlot;
 import dev.emi.trinkets.TrinketPlayerScreenHandler;
-import dev.emi.trinkets.TrinketSlot;
 import dev.emi.trinkets.TrinketsClient;
 import dev.emi.trinkets.api.SlotGroup;
 import dev.emi.trinkets.api.SlotReference;
@@ -24,13 +28,13 @@ import dev.emi.trinkets.api.SlotType;
 import dev.emi.trinkets.api.TrinketComponent;
 import dev.emi.trinkets.api.TrinketInventory;
 import dev.emi.trinkets.api.TrinketsApi;
+import dev.emi.trinkets.mixin.accessor.ScreenHandlerAccessor;
 import net.minecraft.entity.player.PlayerEntity;
 import net.minecraft.entity.player.PlayerInventory;
 import net.minecraft.item.ItemStack;
 import net.minecraft.screen.PlayerScreenHandler;
 import net.minecraft.screen.ScreenHandler;
 import net.minecraft.screen.slot.Slot;
-import net.minecraft.util.Pair;
 
 /**
  * Adds trinket slots to the player's screen handler
@@ -43,9 +47,11 @@ public abstract class PlayerScreenHandlerMixin extends ScreenHandler implements 
 	private PlayerEntity owner;
 
 	@Unique
-	private final Map<SlotGroup, Pair<Integer, Integer>> groupPos = new HashMap<>();
+	private final Map<SlotGroup, Integer> groupNums = new HashMap<>();
 	@Unique
-	private final Map<SlotGroup, List<Pair<Integer, Integer>>> slotHeights = new HashMap<>();
+	private final Map<SlotGroup, Point> groupPos = new HashMap<>();
+	@Unique
+	private final Map<SlotGroup, List<Point>> slotHeights = new HashMap<>();
 	@Unique
 	private final Map<SlotGroup, List<SlotType>> slotTypes = new HashMap<>();
 	@Unique
@@ -66,17 +72,19 @@ public abstract class PlayerScreenHandlerMixin extends ScreenHandler implements 
 	@Inject(at = @At("RETURN"), method = "<init>")
 	private void init(PlayerInventory playerInv, boolean onServer, PlayerEntity owner, CallbackInfo info) {
 		this.inventory = playerInv;
-		updateTrinketSlots(true);
+		trinkets$updateTrinketSlots(true);
 	}
 
 	@Override
-	public void updateTrinketSlots(boolean slotsChanged) {
+	public void trinkets$updateTrinketSlots(boolean slotsChanged) {
 		TrinketsApi.getTrinketComponent(owner).ifPresent(trinkets -> {
 			if (slotsChanged) trinkets.update();
 			Map<String, SlotGroup> groups = trinkets.getGroups();
 			groupPos.clear();
 			while (trinketSlotStart < trinketSlotEnd) {
 				slots.remove(trinketSlotStart);
+				((ScreenHandlerAccessor) (this)).getTrackedStacks().remove(trinketSlotStart);
+				((ScreenHandlerAccessor) (this)).getPreviousTrackedStacks().remove(trinketSlotStart);
 				trinketSlotEnd--;
 			}
 
@@ -90,8 +98,9 @@ public abstract class PlayerScreenHandlerMixin extends ScreenHandler implements 
 				if (id != -1) {
 					if (this.slots.size() > id) {
 						Slot slot = this.slots.get(id);
-						if (!(slot instanceof TrinketSlot)) {
-							groupPos.put(group, new Pair<>(slot.x, slot.y));
+						if (!(slot instanceof SurvivalTrinketSlot)) {
+							groupPos.put(group, new Point(slot.x, slot.y));
+							groupNums.put(group, -id);
 						}
 					}
 				} else {
@@ -103,14 +112,12 @@ public abstract class PlayerScreenHandlerMixin extends ScreenHandler implements 
 					} else {
 						y = 62 - groupNum * 18;
 					}
-					groupPos.put(group, new Pair<>(x, y));
+					groupPos.put(group, new Point(x, y));
+					groupNums.put(group, groupNum);
 					groupNum++;
 				}
 			}
-			if (groupNum > 4) {
-				groupCount = groupNum - 4;
-			}
-
+			groupCount = Math.max(0, groupNum - 4);
 			trinketSlotStart = slots.size();
 			slotWidths.clear();
 			slotHeights.clear();
@@ -124,7 +131,7 @@ public abstract class PlayerScreenHandlerMixin extends ScreenHandler implements 
 					groupOffset++;
 				}
 				int width = 0;
-				Pair<Integer, Integer> pos = getGroupPos(group);
+				Point pos = trinkets$getGroupPos(group);
 				if (pos == null) {
 					continue;
 				}
@@ -135,12 +142,12 @@ public abstract class PlayerScreenHandlerMixin extends ScreenHandler implements 
 						continue;
 					}
 					int slotOffset = 1;
-					int x = (int) (pos.getLeft() + (groupOffset / 2) * 18 * Math.pow(-1, groupOffset));
-					slotHeights.computeIfAbsent(group, (k) -> new ArrayList<>()).add(new Pair<>(x, stacks.size()));
+					int x = (int) ((groupOffset / 2) * 18 * Math.pow(-1, groupOffset));
+					slotHeights.computeIfAbsent(group, (k) -> new ArrayList<>()).add(new Point(x, stacks.size()));
 					slotTypes.computeIfAbsent(group, (k) -> new ArrayList<>()).add(stacks.getSlotType());
 					for (int i = 0; i < stacks.size(); i++) {
-						int y = (int) (pos.getRight() + (slotOffset / 2) * 18 * Math.pow(-1, slotOffset));
-						this.addSlot(new TrinketSlot(stacks, i, x, y, group, stacks.getSlotType(), i, groupOffset == 1 && i == 0));
+						int y = (int) (pos.y() + (slotOffset / 2) * 18 * Math.pow(-1, slotOffset));
+						this.addSlot(new SurvivalTrinketSlot(stacks, i, x + pos.x(), y, group, stacks.getSlotType(), i, groupOffset == 1 && i == 0));
 						slotOffset++;
 					}
 					groupOffset++;
@@ -162,30 +169,55 @@ public abstract class PlayerScreenHandlerMixin extends ScreenHandler implements 
 		}
 		return false;
 	}
-	
+
 	@Override
-	public Pair<Integer, Integer> getGroupPos(SlotGroup group) {
+	public int trinkets$getGroupNum(SlotGroup group) {
+		return groupNums.getOrDefault(group, 0);
+	}
+
+	@Nullable
+	@Override
+	public Point trinkets$getGroupPos(SlotGroup group) {
 		return groupPos.get(group);
 	}
 
+	@Nonnull
 	@Override
-	public List<Pair<Integer, Integer>> getSlotHeights(SlotGroup group) {
-		return slotHeights.get(group);
+	public List<Point> trinkets$getSlotHeights(SlotGroup group) {
+		return slotHeights.getOrDefault(group, ImmutableList.of());
+	}
+
+	@Nullable
+	@Override
+	public Point trinkets$getSlotHeight(SlotGroup group, int i) {
+		List<Point> points = this.trinkets$getSlotHeights(group);
+		return i < points.size() ? points.get(i) : null;
+	}
+
+	@Nonnull
+	@Override
+	public List<SlotType> trinkets$getSlotTypes(SlotGroup group) {
+		return slotTypes.getOrDefault(group, ImmutableList.of());
 	}
 
 	@Override
-	public List<SlotType> getSlotTypes(SlotGroup group) {
-		return slotTypes.get(group);
+	public int trinkets$getSlotWidth(SlotGroup group) {
+		return slotWidths.getOrDefault(group, 0);
 	}
 
 	@Override
-	public int getSlotWidth(SlotGroup group) {
-		return slotWidths.get(group);
-	}
-
-	@Override
-	public int getGroupCount() {
+	public int trinkets$getGroupCount() {
 		return groupCount;
+	}
+
+	@Override
+	public int trinkets$getTrinketSlotStart() {
+		return trinketSlotStart;
+	}
+
+	@Override
+	public int trinkets$getTrinketSlotEnd() {
+		return trinketSlotEnd;
 	}
 
 	@Inject(at = @At("HEAD"), method = "close")
@@ -213,11 +245,11 @@ public abstract class PlayerScreenHandlerMixin extends ScreenHandler implements 
 				TrinketsApi.getTrinketComponent(player).ifPresent(trinkets -> {
 						for (int i = trinketSlotStart; i < trinketSlotEnd; i++) {
 							Slot s = slots.get(i);
-							if (!(s instanceof TrinketSlot) || !s.canInsert(stack)) {
+							if (!(s instanceof SurvivalTrinketSlot) || !s.canInsert(stack)) {
 								continue;
 							}
 							
-							TrinketSlot ts = (TrinketSlot) s;
+							SurvivalTrinketSlot ts = (SurvivalTrinketSlot) s;
 							SlotType type = ts.getType();
 							SlotReference ref = new SlotReference((TrinketInventory) ts.inventory, ts.getIndex());
 
@@ -227,7 +259,7 @@ public abstract class PlayerScreenHandlerMixin extends ScreenHandler implements 
 								if (this.insertItem(stack, i, i + 1, false)) {
 									if (player.world.isClient) {
 										TrinketsClient.quickMoveTimer = 20;
-										TrinketsClient.quickMoveGroup = TrinketsApi.getPlayerSlots().get(type.getGroup());
+										TrinketsClient.quickMoveGroup = TrinketsApi.getPlayerSlots(this.owner).get(type.getGroup());
 										if (ref.index() > 0) {
 											TrinketsClient.quickMoveType = type;
 										} else {
